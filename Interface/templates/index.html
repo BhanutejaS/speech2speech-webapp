@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Live AI Assistant</title>
+    <style>
+        body { font-family: sans-serif; max-width: 800px; margin: auto; padding: 20px; line-height: 1.6; }
+        #log { border: 1px solid #ccc; padding: 10px; min-height: 300px; max-height: 500px; overflow-y: scroll; margin-top: 20px; }
+        .user-text { color: #007bff; }
+        .assistant-text { color: #28a745; }
+        .start-button { font-size: 24px; padding: 15px 30px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>Live AI Assistant</h1>
+    <p>Click the button below to start the conversation. The microphone audio will be streamed to the server, and the assistant's response will be played back to your speakers.</p>
+    <button id="startButton" class="start-button">Start Listening</button>
+    <div id="log"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.js"></script>
+    <script>
+        const SAMPLE_RATE = 16000;
+        const BLOCK_SIZE = 512;
+        const log = document.getElementById('log');
+        const startButton = document.getElementById('startButton');
+
+        let audioContext;
+        let microphone;
+        let scriptNode;
+        let socket;
+        let playingAudioSource = null;
+        let audioQueue = [];
+
+        function appendToLog(text) {
+            log.innerHTML += `<p>${text}</p>`;
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function playAudioFromQueue() {
+            if (audioQueue.length > 0 && !playingAudioSource) {
+                const chunk = audioQueue.shift();
+                const audioBuffer = audioContext.createBuffer(1, chunk.length, 24000);
+                const float32Array = new Float32Array(chunk);
+                audioBuffer.copyToChannel(float32Array, 0);
+
+                playingAudioSource = audioContext.createBufferSource();
+                playingAudioSource.buffer = audioBuffer;
+                playingAudioSource.connect(audioContext.destination);
+                playingAudioSource.onended = () => {
+                    playingAudioSource = null;
+                    playAudioFromQueue();
+                };
+                playingAudioSource.start(0);
+            }
+        }
+
+        startButton.addEventListener('click', async () => {
+            if (audioContext && audioContext.state === 'running') {
+                audioContext.suspend().then(() => {
+                    startButton.textContent = 'Start Listening';
+                    appendToLog('Stopped listening.');
+                });
+                return;
+            }
+
+            audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+            socket = io();
+
+            socket.on('connect', () => {
+                appendToLog('Connected to server.');
+                startButton.textContent = 'Stop Listening';
+            });
+
+            socket.on('text_update', (text) => {
+                const isUserText = text.startsWith('[User]:');
+                const p = document.createElement('p');
+                p.textContent = text;
+                p.classList.add(isUserText ? 'user-text' : 'assistant-text');
+                log.appendChild(p);
+                log.scrollTop = log.scrollHeight;
+            });
+
+            socket.on('audio_chunk', (data) => {
+                // Decode the audio chunk and add to queue
+                const float32Array = new Float32Array(data);
+                audioQueue.push(float32Array);
+                if (!playingAudioSource) {
+                    playAudioFromQueue();
+                }
+            });
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                microphone = audioContext.createMediaStreamSource(stream);
+                
+                // Create a ScriptProcessorNode to process audio
+                scriptNode = audioContext.createScriptProcessor(BLOCK_SIZE, 1, 1);
+
+                scriptNode.onaudioprocess = (event) => {
+                    const inputBuffer = event.inputBuffer.getChannelData(0);
+                    // We need to resample the audio to 16kHz for Whisper
+                    // This is a very basic resampling. A more robust solution might use a library.
+                    const downsampled = resample(inputBuffer, audioContext.sampleRate, SAMPLE_RATE);
+                    
+                    if (socket && socket.connected) {
+                        // Send the Float32Array as a byte array
+                        socket.emit('audio_chunk', btoa(String.fromCharCode.apply(null, new Uint8Array(downsampled.buffer))));
+                    }
+                };
+
+                microphone.connect(scriptNode);
+                scriptNode.connect(audioContext.destination);
+
+                appendToLog('Listening for speech...');
+
+            } catch (err) {
+                appendToLog(`Error accessing microphone: ${err.message}`);
+                console.error('Error accessing microphone:', err);
+            }
+        });
+
+        // Simple resampling function (not very efficient but works for a demo)
+        function resample(inputBuffer, inputSampleRate, outputSampleRate) {
+            const ratio = inputSampleRate / outputSampleRate;
+            const outputLength = Math.round(inputBuffer.length / ratio);
+            const output = new Float32Array(outputLength);
+            for (let i = 0; i < outputLength; ++i) {
+                const inputIndex = Math.floor(i * ratio);
+                output[i] = inputBuffer[inputIndex];
+            }
+            return output;
+        }
+    </script>
+</body>
+</html>
