@@ -60,11 +60,17 @@ audio_q = queue.Queue()
 tts_q = queue.Queue()
 web_q = queue.Queue()  # New queue for sending messages to the web UI
 user_input_q = queue.Queue()  # New queue for receiving text input from the web UI
+stop_q = queue.Queue()  # Queue for stop signals
 
 rms_values = []
 conversation_context = [{"role": "system", "content": "You are a helpful assistant."}]
 last_user_text = ""
 LLM_LOCK = threading.Lock()
+STOP_SIGNAL = threading.Event()
+STT_PAUSED = False
+VOLUME = 0.7
+AUDIO_DEVICE = None
+CURRENT_AUDIO_LEVEL = 0.0
 
 # -------------------------- AUDIO HELPERS -------------------------
 def audio_callback(indata, frames, time_info, status):
@@ -73,7 +79,9 @@ def audio_callback(indata, frames, time_info, status):
     audio_q.put(indata[:, 0].copy())
 
 def is_speech(audio_chunk):
+    global CURRENT_AUDIO_LEVEL
     rms = float(np.sqrt(np.mean(audio_chunk**2) + 1e-10))
+    CURRENT_AUDIO_LEVEL = min(1.0, rms * 10)  # Scale for visualizer
     rms_values.append(rms)
     if len(rms_values) > RMS_HISTORY:
         rms_values.pop(0)
@@ -86,7 +94,12 @@ def tts_worker():
         item = tts_q.get()
         if item is None:
             break
-        sd.play(item, 24000, blocking=True)
+        if STOP_SIGNAL.is_set():
+            continue
+        # Apply volume scaling
+        scaled_audio = item * VOLUME
+        device_id = AUDIO_DEVICE if AUDIO_DEVICE != "default" else None
+        sd.play(scaled_audio, 24000, device=device_id, blocking=True)
         tts_q.task_done()
 
 threading.Thread(target=tts_worker, daemon=True).start()
@@ -116,7 +129,11 @@ def speak_by_clauses(text: str):
         clauses.append(buf.strip())
 
     for clause in clauses:
-        for chunk in synth_kokoro_stream(clause):
+        if STOP_SIGNAL.is_set():
+            break
+        for chunk in synth_kokoro_stream(clause, VOICE):
+            if STOP_SIGNAL.is_set():
+                break
             tts_q.put(chunk)
 
 # ----------------------------- LLM --------------------------------
@@ -130,6 +147,8 @@ def speculative_gpt_tts_stream(segment_text):
 
         try:
             buf = ""
+            message_id = f"msg_{int(time.time() * 1000)}"  # Unique ID for this message
+            
             resp = client.chat.completions.create(
                 model=LLM_MODEL,
                 messages=conversation_context,
@@ -140,10 +159,24 @@ def speculative_gpt_tts_stream(segment_text):
                 if hasattr(delta, "content") and delta.content:
                     buf += delta.content
                     print(delta.content, end="", flush=True)
+                    
+                    # Send streaming update to web queue
+                    web_q.put({
+                        "role": "assistant", 
+                        "content": buf,
+                        "streaming": True,
+                        "message_id": message_id
+                    })
+            
             print("\n[GPT Complete]")
             
-            # Send assistant's full response to the web queue
-            web_q.put({"role": "assistant", "content": buf})
+            # Send final complete message
+            web_q.put({
+                "role": "assistant", 
+                "content": buf,
+                "streaming": False,
+                "message_id": message_id
+            })
 
             speak_by_clauses(buf)
             conversation_context.append({"role": "assistant", "content": buf})
@@ -177,6 +210,11 @@ def live_transcribe_loop():
 
                 # Process audio input
                 audio = audio_q.get()
+                
+                # Skip audio processing if STT is paused
+                if STT_PAUSED:
+                    continue
+                    
                 buffer = np.concatenate((buffer, audio))
 
                 if is_speech(audio):
@@ -243,6 +281,81 @@ def send_text():
         user_input_q.put(text)
         return jsonify(success=True)
     return jsonify(success=False, error="No text provided")
+
+# API endpoint to stop AI response
+@app.route("/stop", methods=["POST"])
+def stop_response():
+    STOP_SIGNAL.set()
+    # Clear TTS queue
+    while not tts_q.empty():
+        try:
+            tts_q.get_nowait()
+        except queue.Empty:
+            break
+    # Clear the stop signal after clearing queue
+    STOP_SIGNAL.clear()
+    return jsonify(success=True)
+
+# API endpoint to toggle STT pause
+@app.route("/toggle_stt", methods=["POST"])
+def toggle_stt():
+    global STT_PAUSED
+    data = request.json
+    STT_PAUSED = data.get("paused", False)
+    return jsonify(success=True, paused=STT_PAUSED)
+
+# API endpoint to change TTS voice
+@app.route("/change_voice", methods=["POST"])
+def change_voice():
+    global VOICE
+    data = request.json
+    VOICE = data.get("voice", VOICE)
+    return jsonify(success=True, voice=VOICE)
+
+# API endpoint to change silence multiplier
+@app.route("/change_silence_multiplier", methods=["POST"])
+def change_silence_multiplier():
+    global SILENCE_MULTIPLIER
+    data = request.json
+    SILENCE_MULTIPLIER = data.get("multiplier", SILENCE_MULTIPLIER)
+    return jsonify(success=True, multiplier=SILENCE_MULTIPLIER)
+
+# API endpoint to change volume
+@app.route("/change_volume", methods=["POST"])
+def change_volume():
+    global VOLUME
+    data = request.json
+    VOLUME = data.get("volume", VOLUME)
+    return jsonify(success=True, volume=VOLUME)
+
+# API endpoint to change audio device
+@app.route("/change_audio_device", methods=["POST"])
+def change_audio_device():
+    global AUDIO_DEVICE
+    data = request.json
+    AUDIO_DEVICE = data.get("device_id", "default")
+    return jsonify(success=True, device_id=AUDIO_DEVICE)
+
+# API endpoint to get available audio devices
+@app.route("/get_audio_devices")
+def get_audio_devices():
+    try:
+        devices = sd.query_devices()
+        output_devices = []
+        for i, device in enumerate(devices):
+            if device['max_output_channels'] > 0:
+                output_devices.append({
+                    'id': i,
+                    'name': device['name']
+                })
+        return jsonify(devices=output_devices)
+    except Exception as e:
+        return jsonify(devices=[], error=str(e))
+
+# API endpoint to get current audio level
+@app.route("/get_audio_level")
+def get_audio_level():
+    return jsonify(level=CURRENT_AUDIO_LEVEL)
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000)

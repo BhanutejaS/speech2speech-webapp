@@ -8,10 +8,24 @@
         body {
             font-family: sans-serif;
             display: flex;
-            flex-direction: column;
             height: 100vh;
             margin: 0;
             background-color: #f0f2f5;
+        }
+        #main-container {
+            display: flex;
+            width: 100%;
+        }
+        #settings-panel {
+            width: 300px;
+            background-color: white;
+            border-right: 1px solid #ddd;
+            padding: 20px;
+        }
+        #chat-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
         }
         #conversation-box {
             flex: 1;
@@ -59,29 +73,243 @@
             cursor: pointer;
             outline: none;
         }
+        #stop-button {
+            padding: 10px 20px;
+            border: none;
+            background-color: #dc3545;
+            color: white;
+            border-radius: 20px;
+            cursor: pointer;
+            outline: none;
+            margin-left: 10px;
+        }
+        .setting-item {
+            margin-bottom: 15px;
+        }
+        .setting-label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .toggle-switch {
+            position: relative;
+            width: 50px;
+            height: 24px;
+            background-color: #ccc;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        .toggle-switch.active {
+            background-color: #28a745;
+        }
+        .toggle-slider {
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 20px;
+            height: 20px;
+            background-color: white;
+            border-radius: 50%;
+            transition: transform 0.3s;
+        }
+        .toggle-switch.active .toggle-slider {
+            transform: translateX(26px);
+        }
+        .message h1, .message h2, .message h3 {
+            margin: 10px 0 5px 0;
+            font-size: 1.1em;
+            font-weight: bold;
+        }
+        .message strong {
+            font-weight: bold;
+        }
+        .message em {
+            font-style: italic;
+        }
+        select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background-color: white;
+        }
+        .slider-container {
+            margin-top: 5px;
+        }
+        .slider {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: #ddd;
+            outline: none;
+            -webkit-appearance: none;
+        }
+        .slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #28a745;
+            cursor: pointer;
+        }
+        .slider::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #28a745;
+            cursor: pointer;
+            border: none;
+        }
+        .setting-tip {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 3px;
+        }
+        .cursor {
+            animation: blink 1s infinite;
+            color: #007bff;
+        }
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+        .visualizer-container {
+            width: 100%;
+            height: 20px;
+            background-color: #ddd;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-top: 5px;
+        }
+        .visualizer-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #28a745 0%, #ffc107 70%, #dc3545 100%);
+            width: 0%;
+            transition: width 0.1s ease;
+            border-radius: 10px;
+        }
     </style>
 </head>
 <body>
 
-<div id="conversation-box">
+<div id="main-container">
+    <div id="settings-panel">
+        <h3>Settings</h3>
+        <div class="setting-item">
+            <label class="setting-label">Pause Speech-to-Text</label>
+            <div class="toggle-switch" id="stt-toggle">
+                <div class="toggle-slider"></div>
+            </div>
+        </div>
+        
+        <div class="setting-item">
+            <label class="setting-label">TTS Voice</label>
+            <select id="voice-select">
+                <option value="af_heart">AF Heart</option>
+                <option value="af_sky">AF Sky</option>
+                <option value="am_adam">AM Adam</option>
+                <option value="am_michael">AM Michael</option>
+                <option value="bf_emma">BF Emma</option>
+                <option value="bf_isabella">BF Isabella</option>
+                <option value="bm_george">BM George</option>
+                <option value="bm_lewis">BM Lewis</option>
+            </select>
+        </div>
+        
+        <div class="setting-item">
+            <label class="setting-label">Silence Multiplier: <span id="silence-value">1.6</span></label>
+            <div class="slider-container">
+                <input type="range" min="1.0" max="3.0" step="0.1" value="1.6" class="slider" id="silence-slider">
+            </div>
+            <div class="setting-tip">Lower = more sensitive to voice, Higher = requires louder speech</div>
+        </div>
+        
+        <div class="setting-item">
+            <label class="setting-label">Volume: <span id="volume-value">0.7</span></label>
+            <div class="slider-container">
+                <input type="range" min="0.0" max="1.0" step="0.1" value="0.7" class="slider" id="volume-slider">
+            </div>
+        </div>
+        
+        <div class="setting-item">
+            <label class="setting-label">Audio Output Device</label>
+            <select id="audio-device-select">
+                <option value="default">Default Device</option>
+            </select>
+        </div>
+        
+        <div class="setting-item">
+            <label class="setting-label">Audio Level</label>
+            <div class="visualizer-container">
+                <div class="visualizer-bar" id="audio-visualizer"></div>
+            </div>
+        </div>
     </div>
 
-<div id="input-area">
-    <input type="text" id="text-input" placeholder="Type a message or just speak...">
-    <button id="send-button">Send</button>
+    <div id="chat-container">
+        <div id="conversation-box">
+        </div>
+
+        <div id="input-area">
+            <input type="text" id="text-input" placeholder="Type a message or just speak...">
+            <button id="send-button">Send</button>
+            <button id="stop-button">Stop</button>
+        </div>
+    </div>
 </div>
 
 <script>
     const conversationBox = document.getElementById('conversation-box');
     const textInput = document.getElementById('text-input');
     const sendButton = document.getElementById('send-button');
+    const stopButton = document.getElementById('stop-button');
+    const sttToggle = document.getElementById('stt-toggle');
+    const voiceSelect = document.getElementById('voice-select');
+    const silenceSlider = document.getElementById('silence-slider');
+    const silenceValue = document.getElementById('silence-value');
+    const volumeSlider = document.getElementById('volume-slider');
+    const volumeValue = document.getElementById('volume-value');
+    const audioDeviceSelect = document.getElementById('audio-device-select');
+    const audioVisualizer = document.getElementById('audio-visualizer');
+    let sttPaused = false;
+    let streamingMessages = new Map(); // Track streaming messages by ID
 
-    function addMessage(text, role) {
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `message ${role}`;
-        messageDiv.textContent = text;
-        conversationBox.appendChild(messageDiv);
+    function addMessage(text, role, messageId = null, streaming = false) {
+        let messageDiv;
+        
+        if (messageId && streamingMessages.has(messageId)) {
+            // Update existing streaming message
+            messageDiv = streamingMessages.get(messageId);
+        } else {
+            // Create new message
+            messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+            conversationBox.appendChild(messageDiv);
+            
+            if (messageId) {
+                streamingMessages.set(messageId, messageDiv);
+            }
+        }
+        
+        // Convert markdown-like formatting to HTML
+        let formattedText = text
+            .replace(/### (.+)/g, '<h3>$1</h3>')
+            .replace(/## (.+)/g, '<h2>$1</h2>')
+            .replace(/# (.+)/g, '<h1>$1</h1>')
+            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.+?)\*/g, '<em>$1</em>')
+            .replace(/- (.+)/g, '• $1')
+            .replace(/\n/g, '<br>');
+        
+        messageDiv.innerHTML = formattedText + (streaming ? '<span class="cursor">|</span>' : '');
         conversationBox.scrollTop = conversationBox.scrollHeight;
+        
+        // Clean up completed streaming messages
+        if (!streaming && messageId) {
+            streamingMessages.delete(messageId);
+        }
     }
 
     async function sendMessage() {
@@ -97,7 +325,97 @@
         }
     }
 
+    async function stopResponse() {
+        await fetch('/stop', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+
+    async function toggleSTT() {
+        sttPaused = !sttPaused;
+        sttToggle.classList.toggle('active', sttPaused);
+        
+        await fetch('/toggle_stt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paused: sttPaused })
+        });
+    }
+
+    async function changeVoice() {
+        const voice = voiceSelect.value;
+        await fetch('/change_voice', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ voice: voice })
+        });
+    }
+
+    async function changeSilenceMultiplier() {
+        const multiplier = parseFloat(silenceSlider.value);
+        silenceValue.textContent = multiplier.toFixed(1);
+        await fetch('/change_silence_multiplier', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ multiplier: multiplier })
+        });
+    }
+
+    async function changeVolume() {
+        const volume = parseFloat(volumeSlider.value);
+        volumeValue.textContent = volume.toFixed(1);
+        await fetch('/change_volume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ volume: volume })
+        });
+    }
+
+    async function changeAudioDevice() {
+        const deviceId = audioDeviceSelect.value;
+        await fetch('/change_audio_device', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device_id: deviceId })
+        });
+    }
+
+    async function loadAudioDevices() {
+        try {
+            const response = await fetch('/get_audio_devices');
+            const data = await response.json();
+            
+            audioDeviceSelect.innerHTML = '<option value="default">Default Device</option>';
+            data.devices.forEach(device => {
+                const option = document.createElement('option');
+                option.value = device.id;
+                option.textContent = device.name;
+                audioDeviceSelect.appendChild(option);
+            });
+        } catch (error) {
+            console.error("Error loading audio devices:", error);
+        }
+    }
+
+    async function updateAudioLevel() {
+        try {
+            const response = await fetch('/get_audio_level');
+            const data = await response.json();
+            const level = Math.min(100, Math.max(0, data.level * 100));
+            audioVisualizer.style.width = level + '%';
+        } catch (error) {
+            // Silently fail to avoid console spam
+        }
+    }
+
     sendButton.addEventListener('click', sendMessage);
+    stopButton.addEventListener('click', stopResponse);
+    sttToggle.addEventListener('click', toggleSTT);
+    voiceSelect.addEventListener('change', changeVoice);
+    silenceSlider.addEventListener('input', changeSilenceMultiplier);
+    volumeSlider.addEventListener('input', changeVolume);
+    audioDeviceSelect.addEventListener('change', changeAudioDevice);
     textInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
             sendMessage();
@@ -110,7 +428,13 @@
             const data = await response.json();
             
             data.messages.forEach(msg => {
-                addMessage(msg.content, msg.role);
+                if (msg.message_id && msg.streaming !== undefined) {
+                    // Handle streaming message
+                    addMessage(msg.content, msg.role, msg.message_id, msg.streaming);
+                } else {
+                    // Handle regular message
+                    addMessage(msg.content, msg.role);
+                }
             });
         } catch (error) {
             console.error("Error fetching updates:", error);
@@ -118,6 +442,8 @@
     }
 
     setInterval(fetchUpdates, 1000);
+    setInterval(updateAudioLevel, 100);
+    loadAudioDevices();
     addMessage("Hello! I'm ready when you are. You can type or just start talking.", 'assistant');
 </script>
 
