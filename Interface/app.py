@@ -72,6 +72,7 @@ VOLUME = 0.7
 AUDIO_DEVICE = None
 CURRENT_AUDIO_LEVEL = 0.0
 STOP_TIMESTAMP = 0
+TTS_PLAYING = False
 
 # -------------------------- AUDIO HELPERS -------------------------
 def audio_callback(indata, frames, time_info, status):
@@ -91,6 +92,7 @@ def is_speech(audio_chunk):
     return rms > threshold
 
 def tts_worker():
+    global TTS_PLAYING
     while True:
         item = tts_q.get()
         if item is None:
@@ -102,6 +104,9 @@ def tts_worker():
         scaled_audio = item * VOLUME
         device_id = AUDIO_DEVICE if AUDIO_DEVICE != "default" else None
         
+        # Mark TTS as playing to mute microphone
+        TTS_PLAYING = True
+        
         # Start non-blocking playback
         sd.play(scaled_audio, 24000, device=device_id, blocking=False)
         
@@ -111,6 +116,9 @@ def tts_worker():
                 sd.stop()  # Immediately stop audio
                 break
             time.sleep(0.01)  # Small delay to prevent busy waiting
+        
+        # Mark TTS as stopped
+        TTS_PLAYING = False
         
         tts_q.task_done()
 
@@ -223,8 +231,8 @@ def live_transcribe_loop():
                 # Process audio input
                 audio = audio_q.get()
                 
-                # Skip audio processing if STT is paused
-                if STT_PAUSED:
+                # Skip audio processing if STT is paused or TTS is playing
+                if STT_PAUSED or TTS_PLAYING:
                     continue
                     
                 buffer = np.concatenate((buffer, audio))
@@ -297,7 +305,9 @@ def send_text():
 # API endpoint to stop AI response
 @app.route("/stop", methods=["POST"])
 def stop_response():
+    global TTS_PLAYING
     STOP_SIGNAL.set()
+    TTS_PLAYING = False  # Unmute microphone when stopping
     # Clear TTS queue
     while not tts_q.empty():
         try:
