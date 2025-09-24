@@ -71,6 +71,7 @@ STT_PAUSED = False
 VOLUME = 0.7
 AUDIO_DEVICE = None
 CURRENT_AUDIO_LEVEL = 0.0
+STOP_TIMESTAMP = 0
 
 # -------------------------- AUDIO HELPERS -------------------------
 def audio_callback(indata, frames, time_info, status):
@@ -94,12 +95,23 @@ def tts_worker():
         item = tts_q.get()
         if item is None:
             break
+        # Skip if stop signal is set, but don't clear it here
         if STOP_SIGNAL.is_set():
             continue
         # Apply volume scaling
         scaled_audio = item * VOLUME
         device_id = AUDIO_DEVICE if AUDIO_DEVICE != "default" else None
-        sd.play(scaled_audio, 24000, device=device_id, blocking=True)
+        
+        # Start non-blocking playback
+        sd.play(scaled_audio, 24000, device=device_id, blocking=False)
+        
+        # Check stop signal while audio is playing
+        while sd.get_stream().active:
+            if STOP_SIGNAL.is_set():
+                sd.stop()  # Immediately stop audio
+                break
+            time.sleep(0.01)  # Small delay to prevent busy waiting
+        
         tts_q.task_done()
 
 threading.Thread(target=tts_worker, daemon=True).start()
@@ -130,10 +142,10 @@ def speak_by_clauses(text: str):
 
     for clause in clauses:
         if STOP_SIGNAL.is_set():
-            break
+            return  # Exit function if stopped
         for chunk in synth_kokoro_stream(clause, VOICE):
             if STOP_SIGNAL.is_set():
-                break
+                return  # Exit function if stopped
             tts_q.put(chunk)
 
 # ----------------------------- LLM --------------------------------
@@ -292,8 +304,8 @@ def stop_response():
             tts_q.get_nowait()
         except queue.Empty:
             break
-    # Clear the stop signal after clearing queue
-    STOP_SIGNAL.clear()
+    # Clear the signal after a short delay to allow processing
+    threading.Timer(0.5, lambda: STOP_SIGNAL.clear()).start()
     return jsonify(success=True)
 
 # API endpoint to toggle STT pause
