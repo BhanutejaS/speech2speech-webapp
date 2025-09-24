@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Assistant</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f2f5;
+        }
+        #conversation-box {
+            flex: 1;
+            padding: 20px;
+            overflow-y: scroll;
+            border-bottom: 1px solid #ddd;
+        }
+        .message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 18px;
+            max-width: 70%;
+            word-wrap: break-word;
+        }
+        .user {
+            background-color: #007bff;
+            color: white;
+            align-self: flex-end;
+            margin-left: auto;
+        }
+        .assistant {
+            background-color: #e2e2e2;
+            color: black;
+            align-self: flex-start;
+        }
+        #controls-area {
+            display: flex;
+            justify-content: center;
+            padding: 20px;
+            background-color: white;
+        }
+        #stop-button {
+            padding: 15px 30px;
+            border: none;
+            color: white;
+            border-radius: 25px;
+            cursor: pointer;
+            outline: none;
+            background-color: #dc3545;
+            font-size: 1.2em;
+        }
+    </style>
+</head>
+<body>
+
+<div id="conversation-box">
+</div>
+
+<div id="controls-area">
+    <button id="stop-button">Stop AI</button>
+</div>
+
+<script>
+    const conversationBox = document.getElementById('conversation-box');
+    const stopButton = document.getElementById('stop-button');
+
+    function addMessage(text, role) {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${role}`;
+        messageDiv.textContent = text;
+        conversationBox.appendChild(messageDiv);
+        conversationBox.scrollTop = conversationBox.scrollHeight;
+    }
+
+    async function stopSpeaking() {
+        await fetch('/stop_speaking');
+    }
+
+    stopButton.addEventListener('click', stopSpeaking);
+
+    async function fetchUpdates() {
+        try {
+            const response = await fetch('/get_updates');
+            const data = await response.json();
+            
+            data.messages.forEach(msg => {
+                addMessage(msg.content, msg.role);
+            });
+        } catch (error) {
+            console.error("Error fetching updates:", error);
+        }
+    }
+
+    setInterval(fetchUpdates, 1000);
+    addMessage("Hello! I'm ready when you are. Just start talking.", 'assistant');
+</script>
+
+</body>
+</html>
