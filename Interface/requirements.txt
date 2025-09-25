@@ -1,0 +1,7 @@
+numpy==2.2.6
+sounddevice==0.4.7
+openai-whisper==20250625
+openai
+python-dotenv==1.0.1
+git+https://github.com/hexgrad/kokoro.git@main#egg=kokoro
+Flask==2.3.5
