@@ -9,9 +9,9 @@ For every conversation turn, the following are logged:
 
 - turn_id	: Conversation turn number
 - stt_time :	Time (in seconds) Whisper needed to transcribe speech → text
-- llm_ttft :	GPT time-to-first-token (responsiveness)
+- llm_ttft :	GPT time-to-first-token (LLM time-to-first-token)
 - llm_total	: Total GPT response generation time
-- tts_ttft_play	: Time from GPT finishing → first TTS audio chunk played
-- e2e_ttft :	End-to-end time: user finishes speaking → first AI audio played
+- tts_ttft_play	: Time from GPT finishing → first TTS audio chunk played (TTS time-to-first-token play)
+- e2e_ttft :	End-to-end time (speech end → first AI audio)
 - user_text_len :	Number of characters in transcribed user input
 - assistant_len :	Number of characters in GPT’s reply
