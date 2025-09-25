@@ -15,8 +15,6 @@ from kokoro import KPipeline
 from flask import Flask, render_template, jsonify, request
 
 # Set the PHONEMIZER_ESPEAK_LIBRARY environment variable.
-# This part is crucial for the kokoro library to find its eSpeak dependency.
-# You might need to adjust the path based on your system's eSpeak NG installation.
 # Windows:
 os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = r"C:\Program Files\eSpeak NG\libespeak-ng.dll"
 # Linux:
@@ -58,21 +56,23 @@ pipe = KPipeline(lang_code="a")
 # -------------------------- STATE / QUEUES ------------------------
 audio_q = queue.Queue()
 tts_q = queue.Queue()
-web_q = queue.Queue()  # New queue for sending messages to the web UI
-user_input_q = queue.Queue()  # New queue for receiving text input from the web UI
-stop_q = queue.Queue()  # Queue for stop signals
+web_q = queue.Queue()         # messages to the web UI
+user_input_q = queue.Queue()  # text input from the web UI
 
 rms_values = []
 conversation_context = [{"role": "system", "content": "You are a helpful assistant."}]
 last_user_text = ""
 LLM_LOCK = threading.Lock()
-STOP_SIGNAL = threading.Event()
+
+STOP_SIGNAL = threading.Event()   # global stop/cancel flag
+TTS_PLAYING = False
 STT_PAUSED = False
 VOLUME = 0.7
 AUDIO_DEVICE = None
 CURRENT_AUDIO_LEVEL = 0.0
-STOP_TIMESTAMP = 0
-TTS_PLAYING = False
+
+# NEW: monotonically increasing id to cancel in-flight work
+RESPONSE_GEN_ID = 0
 
 # -------------------------- AUDIO HELPERS -------------------------
 def audio_callback(indata, frames, time_info, status):
@@ -92,34 +92,59 @@ def is_speech(audio_chunk):
     return rms > threshold
 
 def tts_worker():
+    """Continuously plays audio chunks from tts_q. Respects STOP_SIGNAL."""
     global TTS_PLAYING
     while True:
         item = tts_q.get()
         if item is None:
+            # shutdown signal for worker
+            tts_q.task_done()
             break
-        # Skip if stop signal is set, but don't clear it here
+
+        # If we were asked to stop, discard this chunk and continue
         if STOP_SIGNAL.is_set():
+            tts_q.task_done()
             continue
+
         # Apply volume scaling
         scaled_audio = item * VOLUME
         device_id = AUDIO_DEVICE if AUDIO_DEVICE != "default" else None
-        
+
         # Mark TTS as playing to mute microphone
         TTS_PLAYING = True
-        
+
         # Start non-blocking playback
-        sd.play(scaled_audio, 24000, device=device_id, blocking=False)
-        
-        # Check stop signal while audio is playing
-        while sd.get_stream().active:
-            if STOP_SIGNAL.is_set():
-                sd.stop()  # Immediately stop audio
+        try:
+            sd.play(scaled_audio, 24000, device=device_id, blocking=False)
+        except Exception as e:
+            print(f"[TTS play error] {e}")
+            TTS_PLAYING = False
+            tts_q.task_done()
+            continue
+
+        # While audio is playing, allow Stop to cut it off
+        while True:
+            try:
+                s = sd.get_stream()
+                active = bool(s and getattr(s, "active", False))
+            except Exception:
+                # Fallback if stream lookup fails
+                active = False
+
+            if not active:
                 break
-            time.sleep(0.01)  # Small delay to prevent busy waiting
-        
+
+            if STOP_SIGNAL.is_set():
+                try:
+                    sd.stop()
+                except Exception:
+                    pass
+                break
+
+            time.sleep(0.01)
+
         # Mark TTS as stopped
         TTS_PLAYING = False
-        
         tts_q.task_done()
 
 threading.Thread(target=tts_worker, daemon=True).start()
@@ -138,6 +163,7 @@ def synth_kokoro_stream(text: str, voice: str = VOICE):
         yield audio
 
 def speak_by_clauses(text: str):
+    """Chunk TTS by simple clause boundaries and respect STOP_SIGNAL."""
     clauses = []
     buf = ""
     for ch in text:
@@ -150,17 +176,26 @@ def speak_by_clauses(text: str):
 
     for clause in clauses:
         if STOP_SIGNAL.is_set():
-            return  # Exit function if stopped
+            return  # Exit immediately if stopped
         for chunk in synth_kokoro_stream(clause, VOICE):
             if STOP_SIGNAL.is_set():
-                return  # Exit function if stopped
+                return  # Exit immediately if stopped
             tts_q.put(chunk)
 
 # ----------------------------- LLM --------------------------------
 def speculative_gpt_tts_stream(segment_text):
+    """
+    Streams LLM tokens to the UI and (if not cancelled) to TTS.
+    Cancellation is done via STOP_SIGNAL or RESPONSE_GEN_ID changes.
+    """
     global conversation_context
+
     with LLM_LOCK:
-        # Send user message to the web queue
+        # Start of a *new* response: allow talking again
+        STOP_SIGNAL.clear()
+        my_gen_id = RESPONSE_GEN_ID
+
+        # Send user message to UI and context
         web_q.put({"role": "user", "content": segment_text})
         conversation_context.append({"role": "user", "content": segment_text})
         print(f"\n[STT -> GPT] {segment_text}")
@@ -168,44 +203,70 @@ def speculative_gpt_tts_stream(segment_text):
         try:
             buf = ""
             message_id = f"msg_{int(time.time() * 1000)}"  # Unique ID for this message
-            
+
             resp = client.chat.completions.create(
                 model=LLM_MODEL,
                 messages=conversation_context,
                 stream=True
             )
+
+            cancelled = False
             for chunk in resp:
+                # CANCEL CHECK
+                if STOP_SIGNAL.is_set() or my_gen_id != RESPONSE_GEN_ID:
+                    cancelled = True
+                    break
+
                 delta = chunk.choices[0].delta
                 if hasattr(delta, "content") and delta.content:
                     buf += delta.content
                     print(delta.content, end="", flush=True)
-                    
                     # Send streaming update to web queue
                     web_q.put({
-                        "role": "assistant", 
+                        "role": "assistant",
                         "content": buf,
                         "streaming": True,
                         "message_id": message_id
                     })
-            
-            print("\n[GPT Complete]")
-            
-            # Send final complete message
+
+            # Close the underlying stream if possible
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+            print("\n[GPT Cancelled]" if cancelled else "\n[GPT Complete]")
+
+            if cancelled:
+                # Finalize streaming message as "(stopped)" and do not speak or append to history
+                web_q.put({
+                    "role": "assistant",
+                    "content": "(stopped)",
+                    "streaming": False,
+                    "message_id": message_id
+                })
+                return
+
+            # Finalize message
             web_q.put({
-                "role": "assistant", 
+                "role": "assistant",
                 "content": buf,
                 "streaming": False,
                 "message_id": message_id
             })
 
-            speak_by_clauses(buf)
-            conversation_context.append({"role": "assistant", "content": buf})
+            # Speak only if not stopped and still current gen
+            if not STOP_SIGNAL.is_set() and my_gen_id == RESPONSE_GEN_ID:
+                speak_by_clauses(buf)
+                # Only append to history if fully delivered
+                conversation_context.append({"role": "assistant", "content": buf})
 
         except Exception as e:
             print(f"[GPT/TTS Error] {e}")
 
 # --------------------------- CORE THREAD ----------------------------
 def live_transcribe_loop():
+    """Captures mic, segments with simple VAD, sends text to LLM."""
     global last_user_text
     print("Core thread started...")
     model = whisper.load_model(WHISPER_MODEL)
@@ -217,7 +278,7 @@ def live_transcribe_loop():
             samplerate=SAMPLE_RATE, channels=1, blocksize=BLOCK_SIZE, callback=audio_callback
         ):
             while True:
-                # Check for input from the web
+                # Check for typed input from the web UI
                 if not user_input_q.empty():
                     text = user_input_q.get()
                     if text:
@@ -230,11 +291,11 @@ def live_transcribe_loop():
 
                 # Process audio input
                 audio = audio_q.get()
-                
+
                 # Skip audio processing if STT is paused or TTS is playing
                 if STT_PAUSED or TTS_PLAYING:
                     continue
-                    
+
                 buffer = np.concatenate((buffer, audio))
 
                 if is_speech(audio):
@@ -263,7 +324,7 @@ def live_transcribe_loop():
                                 args=(text,),
                                 daemon=True
                             ).start()
-                        
+
                         rms_values.clear()
 
     except KeyboardInterrupt:
@@ -305,17 +366,29 @@ def send_text():
 # API endpoint to stop AI response
 @app.route("/stop", methods=["POST"])
 def stop_response():
-    global TTS_PLAYING
+    global TTS_PLAYING, RESPONSE_GEN_ID
+    # Signal stop and invalidate in-flight work
     STOP_SIGNAL.set()
+    RESPONSE_GEN_ID += 1
+
+    # Stop any currently playing audio and flush device buffers
+    try:
+        sd.stop()
+    except Exception:
+        pass
+
     TTS_PLAYING = False  # Unmute microphone when stopping
-    # Clear TTS queue
+
+    # Clear TTS queue completely
     while not tts_q.empty():
         try:
             tts_q.get_nowait()
+            tts_q.task_done()
         except queue.Empty:
             break
-    # Clear the signal after a short delay to allow processing
-    threading.Timer(0.5, lambda: STOP_SIGNAL.clear()).start()
+
+    # IMPORTANT: do NOT auto-clear STOP_SIGNAL here.
+    # It will be cleared at the start of the next request in speculative_gpt_tts_stream.
     return jsonify(success=True)
 
 # API endpoint to toggle STT pause
@@ -380,4 +453,6 @@ def get_audio_level():
     return jsonify(level=CURRENT_AUDIO_LEVEL)
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000)
+    # Ensure templates folder exists for index.html
+    # Run: python app.py, then open http://127.0.0.1:5000/
+    app.run(host="127.0.0.1", port=5000, debug=False)
