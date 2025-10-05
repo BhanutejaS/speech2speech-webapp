@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Voice Assistant</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background-color: #f4f4f9; }
+        .container { max-width: 800px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+        h1 { color: #333; text-align: center; }
+        .log-area { border: 1px solid #ccc; padding: 15px; min-height: 250px; overflow-y: scroll; background: #f9f9f9; border-radius: 4px; }
+        .message-user { text-align: right; color: #0056b3; margin: 10px 0; }
+        .message-assistant { text-align: left; color: #28a745; margin: 10px 0; }
+        .status { text-align: center; color: #6c757d; margin-top: 20px; font-style: italic; }
+        .latency-box { background: #e9ecef; padding: 10px; margin-top: 15px; border-radius: 4px; font-size: 0.9em; }
+        .latency-box strong { font-weight: bold; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.1/socket.io.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ Real-Time Voice Assistant</h1>
+        <div class="status" id="status-message">Connecting to server...</div>
+        <div class="log-area" id="log-area">
+            </div>
+        <div class="latency-box" id="latency-stats">
+            <strong>Latency (ms):</strong> STT: N/A | LLM First Token: N/A | Total Pipeline: N/A
+        </div>
+        <button id="stop-button" style="display: none; width: 100%; padding: 10px; margin-top: 10px; background-color: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">
+            🛑 Stop AI Response
+        </button>
+    </div>
+
+    <script>
+        const socket = io();
+        const logArea = document.getElementById('log-area');
+        const statusMessage = document.getElementById('status-message');
+        const latencyStats = document.getElementById('latency-stats');
+        const stopButton = document.getElementById('stop-button'); // Get the new button
+
+        let currentAssistantMessage = null;
+
+        // Function to hide the button and reset status
+        function resetAfterStop() {
+            stopButton.style.display = 'none';
+            // The back-end will emit the final "Listening..." status
+        }
+        
+        // ADDED: Event listener for the stop button
+        stopButton.addEventListener('click', function() {
+            socket.emit('stop_response');
+            resetAfterStop();
+        });
+
+
+        // Function to append new messages/elements to the log area
+        function appendMessage(className, text) {
+            const div = document.createElement('div');
+            div.className = className;
+            div.textContent = text;
+            logArea.appendChild(div);
+            logArea.scrollTop = logArea.scrollHeight; // Auto-scroll to bottom
+            return div;
+        }
+
+        // 1. Handle Status Messages
+        socket.on('status', function(data) {
+            statusMessage.textContent = data.message;
+            // Ensure the button is hidden when listening
+            if (data.message.includes('Listening')) {
+                stopButton.style.display = 'none';
+            }
+        });
+
+        // 2. Handle User Transcript
+        socket.on('transcript_update', function(data) {
+            const text = data.text;
+            const t_stt = data.t_stt;
+            appendMessage('message-user', `You: ${text}`);
+            
+            // Start the streaming response container
+            currentAssistantMessage = appendMessage('message-assistant', 'Assistant: ');
+            statusMessage.textContent = 'Assistant is generating response...';
+            stopButton.style.display = 'block'; // SHOW BUTTON when assistant is responding
+
+            // Update STT latency
+            latencyStats.innerHTML = `<strong>Latency (ms):</strong> STT: ${t_stt} | LLM First Token: N/A | Total Pipeline: N/A`;
+        });
+
+        // 3. Handle Assistant Token Stream
+        socket.on('assistant_stream', function(data) {
+            if (currentAssistantMessage) {
+                currentAssistantMessage.textContent += data.token;
+                logArea.scrollTop = logArea.scrollHeight;
+            }
+        });
+
+        // 4. Handle Final Latency Report
+        socket.on('latency_update', function(data) {
+            latencyStats.innerHTML = `
+                <strong>Latency (ms):</strong> 
+                STT: ${data.stt_latency_ms || 'N/A'} | 
+                LLM First Token: ${data.llm_first_token_ms || 'N/A'} | 
+                TTS First Audio: ${data.tts_first_audio_ms || 'N/A'} | 
+                Total Pipeline: ${data.pipeline_total_ms || 'N/A'}
+            `;
+            // The back-end emits 'Listening...' so we can hide the button here too
+            stopButton.style.display = 'none';
+        });
+
+        // 5. Handle Errors
+        socket.on('error', function(data) {
+            statusMessage.textContent = `ERROR: ${data.message}`;
+            stopButton.style.display = 'none'; // Hide button on error
+        });
+    </script>
+</body>
+</html>
