@@ -17,6 +17,7 @@ sample_rate: 16000
 block_size: 512
 
 # VAD (Voice Activity Detection)
+vad_sensitivity: 3.0
 rms_history: 30
 silence_multiplier: 2.0
 min_chunk_sec: 0.5
@@ -31,9 +32,9 @@ output_sample_rate: 24000
 play_chunk: 512
 
 # Barge-in / Echo control
-bargein_ignore_sec: 0.35
-mic_rms_baseline: 0.015
-bargein_multiplier: 2.0
+bargein_ignore_sec: 0.6      # wait slightly longer after assistant starts talking
+mic_rms_baseline: 0.03        # raise baseline (less likely to trigger)
+bargein_multiplier: 4.0       # stricter threshold multiplier
 
 # Flask / SocketIO
 host: "127.0.0.1"

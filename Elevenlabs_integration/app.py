@@ -26,7 +26,7 @@ socketio = SocketIO(app, async_mode="threading")
 
 # API Keys / Clients
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+ELEVENLABS_API_KEY = os.getenv("")
 VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Rachel fallback
 
 client_openai = OpenAI(api_key=OPENAI_API_KEY)

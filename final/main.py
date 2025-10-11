@@ -14,7 +14,7 @@ from elevenlabs.client import ElevenLabs
 from config_loader import SpeechToSpeechConfig
 
 # ====================== LOAD CONFIG ======================
-cfg = SpeechToSpeechConfig("config.yaml")
+cfg = SpeechToSpeechConfig(os.path.join(os.path.dirname(__file__), "config.yaml"))
 
 # ====================== FLASK / SOCKET.IO ======================
 app = Flask(__name__)
@@ -76,14 +76,27 @@ def audio_callback(indata, frames, time_info, status):
     audio_q.put(indata[:, 0].copy())
 
 
-def is_speech(audio_chunk):
+vad_state = {"noise_floor": 0.02}  # initial baseline
+
+def is_speech_adaptive(audio_chunk, sensitivity=3.0):
+    """
+    Cross-platform adaptive VAD:
+    - tracks smoothed noise floor
+    - updates dynamically based on recent mic levels
+    - works across OS/mic differences
+    """
     rms = float(np.sqrt(np.mean(audio_chunk**2) + 1e-10))
-    rms_values.append(rms)
-    if len(rms_values) > cfg.rms_history:
-        rms_values.pop(0)
-    avg_rms = np.mean(rms_values) if rms_values else 0.0
-    threshold = avg_rms * cfg.silence_multiplier
-    return rms > threshold
+
+    # update noise floor when signal is quiet
+    if rms < vad_state["noise_floor"] * (sensitivity * 0.8):
+        vad_state["noise_floor"] = 0.97 * vad_state["noise_floor"] + 0.03 * rms
+
+    threshold = vad_state["noise_floor"] * sensitivity
+    is_voice = rms > threshold
+
+    # optional debug:
+    # print(f"RMS={rms:.5f}, floor={vad_state['noise_floor']:.5f}, thr={threshold:.5f}, speech={is_voice}")
+    return is_voice
 
 
 def linear_resample_int16(x_int16, src_sr, dst_sr):
@@ -359,15 +372,62 @@ def live_transcribe_loop():
         socketio.emit('error', {'message': f'Failed to load Whisper model: {e}'})
         return
 
-    print("Calibrating background noise (1s)...")
-    with sd.InputStream(samplerate=cfg.sample_rate, channels=1, blocksize=cfg.block_size, callback=audio_callback):
-        time.sleep(1.0)
-    samples = []
+    import json
+    import os
+
+    PROFILE_PATH = "audio_profile.json"
+
+    print("Calibrating background noise (3s)...")
+    calibration_samples = []
+    with sd.InputStream(
+      samplerate=cfg.sample_rate,
+      channels=1,
+      blocksize=cfg.block_size,
+      callback=audio_callback
+    ):
+      time.sleep(3.0)
+
     while not audio_q.empty():
-        samples.append(audio_q.get())
-    if samples:
-        BACKGROUND_RMS = float(np.sqrt(np.mean(np.concatenate(samples)**2)))
-    print(f"[Calibration] Background RMS = {BACKGROUND_RMS:.4f}")
+      calibration_samples.append(audio_q.get())
+
+    if calibration_samples:
+       all_audio = np.concatenate(calibration_samples)
+       # Median RMS resists spikes
+       BACKGROUND_RMS = float(np.median(np.abs(all_audio)))
+       BACKGROUND_RMS = max(BACKGROUND_RMS, 1e-4)  # prevent zero
+
+       # Adaptive thresholds
+       cfg.mic_rms_baseline = max(0.03, BACKGROUND_RMS * 2.5)
+       cfg.bargein_multiplier = 4.0 if BACKGROUND_RMS < 0.02 else 5.0
+
+       # Save calibration profile
+       with open(PROFILE_PATH, "w") as f:
+         json.dump({
+            "baseline": cfg.mic_rms_baseline,
+            "multiplier": cfg.bargein_multiplier,
+            "background_rms": BACKGROUND_RMS
+         }, f, indent=2)
+
+       print(f"[Calibration] Adaptive baseline={cfg.mic_rms_baseline:.4f}, "
+          f"multiplier={cfg.bargein_multiplier:.1f}, "
+          f"background_rms={BACKGROUND_RMS:.4f}")
+    else:
+    # Load previous calibration if available
+      if os.path.exists(PROFILE_PATH):
+        with open(PROFILE_PATH, "r") as f:
+            prof = json.load(f)
+        cfg.mic_rms_baseline = prof.get("baseline", 0.03)
+        cfg.bargein_multiplier = prof.get("multiplier", 4.0)
+        BACKGROUND_RMS = prof.get("background_rms", 0.02)
+        print(f"[Calibration] Loaded profile: "
+              f"baseline={cfg.mic_rms_baseline:.4f}, "
+              f"multiplier={cfg.bargein_multiplier:.1f}, "
+              f"background_rms={BACKGROUND_RMS:.4f}")
+      else:
+        BACKGROUND_RMS = 0.02
+        cfg.mic_rms_baseline = 0.03
+        cfg.bargein_multiplier = 4.0
+        print("[Calibration] Using default thresholds.")
 
     socketio.emit('status', {'message': "Listening..."})
     buffer = np.zeros((0,), dtype=np.float32)
@@ -379,6 +439,10 @@ def live_transcribe_loop():
                 socketio.sleep(0.01)
                 try:
                     audio = audio_q.get_nowait()
+                    if not is_speech_adaptive(audio, sensitivity=cfg.vad_sensitivity) and not TTS_PLAYING:
+                        mic_rms = float(np.sqrt(np.mean(audio**2) + 1e-10))
+                        BACKGROUND_RMS = 0.95 * BACKGROUND_RMS + 0.05 * mic_rms
+
                 except queue.Empty:
                     continue
 
@@ -396,8 +460,8 @@ def live_transcribe_loop():
                     continue
 
                 buffer = np.concatenate((buffer, audio))
-                if is_speech(audio):
-                    last_speech_time = time.time()
+                if is_speech_adaptive(audio, sensitivity=cfg.vad_sensitivity):
+                   last_speech_time = time.time()
 
                 enough_audio = buffer.size >= int(cfg.min_chunk_sec * cfg.sample_rate)
                 paused_long = last_speech_time and (time.time() - last_speech_time > cfg.pause_to_cut_sec)

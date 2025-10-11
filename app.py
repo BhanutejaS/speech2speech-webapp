@@ -57,7 +57,7 @@ stop_event = threading.Event()
 listening_event = threading.Event() # <-- New Event for controlling input stream
 
 rms_values = []
-conversation_context = [{"role": "system", "content": "You are a helpful assistant."}]
+conversation_context = [{"role": "system", "content": "You are a helpful assistant. Keep your responses concise and brief. Aim for 1-2 sentences maximum unless more detail is specifically requested."}]
 last_user_text = ""
 LLM_LOCK = threading.Lock()
 
