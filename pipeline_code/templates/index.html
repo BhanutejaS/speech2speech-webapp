@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AI Voice Assistant</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 40px; background-color: #f4f4f9; }
+    .container { max-width: 820px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,.1); }
+    h1 { color: #333; text-align: center; }
+    .log-area { border: 1px solid #ccc; padding: 15px; min-height: 260px; max-height: 420px; overflow-y: auto; background: #f9f9f9; border-radius: 4px; }
+    .message-user { text-align: right; color: #0056b3; margin: 10px 0; }
+    .message-assistant { text-align: left; color: #28a745; margin: 10px 0; white-space: pre-wrap; }
+    .status { text-align: center; color: #6c757d; margin-top: 12px; font-style: italic; }
+    .latency-box { background: #e9ecef; padding: 10px; margin-top: 12px; border-radius: 4px; font-size: 0.9em; }
+    .latency-box strong { font-weight: bold; }
+    .btn-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 12px; }
+    .btn { width: 100%; padding: 10px; border: none; border-radius: 4px; cursor: pointer; }
+    .btn-stop { background-color: #dc3545; color: #fff; }
+    .btn-toggle { background-color: #0d6efd; color: #fff; }
+    .btn-shutdown { background-color: #343a40; color: #fff; }
+    .btn[disabled] { opacity: .6; cursor: not-allowed; }
+    .bye { text-align:center; font-size: 1.2rem; color:#333; padding: 40px 0; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.1/socket.io.min.js"></script>
+</head>
+<body>
+  <div class="container" id="app">
+    <h1>🎙️ Real-Time Voice Assistant</h1>
+
+    <div class="status" id="status-message">Connecting to server...</div>
+
+    <div class="log-area" id="log-area"></div>
+
+    <div class="latency-box" id="latency-stats">
+      <strong>Latency (ms):</strong>
+      STT: N/A | LLM First Token: N/A | TTS First Audio: N/A | Total Pipeline: N/A
+    </div>
+
+    <div class="btn-row">
+      <button id="stop-button" class="btn btn-stop" style="display:none;">🛑 Stop AI Response</button>
+      <button id="toggle-listening" class="btn btn-toggle">⏸️ Stop Listening</button>
+      <button id="shutdown-button" class="btn btn-shutdown">⏹️ Shut Down</button>
+    </div>
+  </div>
+
+  <div class="container" id="bye" style="display:none;">
+    <div class="bye">Bye… See you 👋</div>
+  </div>
+
+  <script>
+    const socket = io();
+    const logArea = document.getElementById('log-area');
+    const statusMessage = document.getElementById('status-message');
+    const latencyStats = document.getElementById('latency-stats');
+    const stopButton = document.getElementById('stop-button');
+    const toggleBtn = document.getElementById('toggle-listening');
+    const shutdownBtn = document.getElementById('shutdown-button');
+
+    let isPaused = false;
+    let currentAssistantMessage = null;
+
+    function appendMessage(className, text) {
+      const div = document.createElement('div');
+      div.className = className;
+      div.textContent = text;
+      logArea.appendChild(div);
+      logArea.scrollTop = logArea.scrollHeight;
+      return div;
+    }
+
+    // Stop AI only
+    stopButton.addEventListener('click', () => {
+      socket.emit('stop_response');
+      stopButton.style.display = 'none';
+    });
+
+    // Single toggle: Stop ↔ Resume Listening
+    toggleBtn.addEventListener('click', () => {
+      toggleBtn.disabled = true;
+      if (isPaused) socket.emit('resume_listening');
+      else socket.emit('pause_listening');
+    });
+
+    // Shut down the whole app
+    shutdownBtn.addEventListener('click', () => {
+      shutdownBtn.disabled = true;
+      socket.emit('shutdown_app');
+    });
+
+    // Status from server
+    socket.on('status', (data) => {
+      const msg = data.message || '';
+      statusMessage.textContent = msg;
+
+      if (msg.includes('Listening')) stopButton.style.display = 'none';
+
+      const paused = msg.toLowerCase().includes('paused');
+      isPaused = paused;
+      toggleBtn.textContent = paused ? '▶️ Resume Listening' : '⏸️ Stop Listening';
+      toggleBtn.disabled = false;
+    });
+
+    // User transcript
+    socket.on('transcript_update', (data) => {
+      appendMessage('message-user', `You: ${data.text}`);
+      currentAssistantMessage = appendMessage('message-assistant', 'Assistant: ');
+      statusMessage.textContent = 'Assistant is generating response...';
+      stopButton.style.display = 'block';
+      latencyStats.innerHTML = `<strong>Latency (ms):</strong> STT: ${data.t_stt} | LLM First Token: N/A | TTS First Audio: N/A | Total Pipeline: N/A`;
+    });
+
+    // Assistant tokens
+    socket.on('assistant_stream', (data) => {
+      if (currentAssistantMessage) {
+        currentAssistantMessage.textContent += data.token;
+        logArea.scrollTop = logArea.scrollHeight;
+      }
+    });
+
+    // Latency update
+    socket.on('latency_update', (data) => {
+      latencyStats.innerHTML = `
+        <strong>Latency (ms):</strong>
+        STT: ${data.stt_latency_ms || 'N/A'} |
+        LLM First Token: ${data.llm_first_token_ms || 'N/A'} |
+        TTS First Audio: ${data.tts_first_audio_ms || 'N/A'} |
+        Total Pipeline: ${data.pipeline_total_ms || 'N/A'}
+      `;
+      stopButton.style.display = 'none';
+    });
+
+    // Error
+    socket.on('error', (data) => {
+      statusMessage.textContent = `ERROR: ${data.message}`;
+      stopButton.style.display = 'none';
+      toggleBtn.disabled = false;
+      shutdownBtn.disabled = false;
+    });
+
+    // Show bye on shutdown
+    socket.on('app_shutdown', (data) => {
+      document.getElementById('app').style.display = 'none';
+      const bye = document.getElementById('bye');
+      bye.style.display = 'block';
+      bye.querySelector('.bye').textContent = data.message || 'Bye… See you 👋';
+      try { socket.disconnect(); } catch {}
+    });
+  </script>
+</body>
+</html>
