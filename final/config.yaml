@@ -1,0 +1,42 @@
+# ======================
+# Speech-to-Speech Config
+# ======================
+
+# API keys (resolved from .env)
+openai_api_key: ${OPENAI_API_KEY}
+elevenlabs_api_key: ${ELEVENLABS_API_KEY}
+elevenlabs_voice_id: "21m00Tcm4TlvDq8ikWAM"   # default: Rachel
+elevenlabs_model: "eleven_turbo_v2"     # high-quality model
+
+# Models
+whisper_model: "tiny.en"
+llm_model: "gpt-4o-mini"
+
+# Mic / STT
+sample_rate: 16000
+block_size: 512
+
+# VAD (Voice Activity Detection)
+rms_history: 30
+silence_multiplier: 2.0
+min_chunk_sec: 0.5
+pause_to_cut_sec: 0.6
+
+# LLM context
+max_history: 6
+
+# Playback
+volume: 0.9
+output_sample_rate: 24000
+play_chunk: 512
+
+# Barge-in / Echo control
+bargein_ignore_sec: 0.35
+mic_rms_baseline: 0.015
+bargein_multiplier: 2.0
+vad_sensitivity: 3.0
+
+# Flask / SocketIO
+host: "127.0.0.1"
+port: 5000
+debug: false
